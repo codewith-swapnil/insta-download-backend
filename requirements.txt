@@ -1,3 +1,4 @@
 flask==3.0.0
 flask-cors==4.0.0
 instaloader==4.10.3
+gunicorn==21.2.0

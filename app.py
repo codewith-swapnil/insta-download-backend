@@ -24,6 +24,13 @@ L = instaloader.Instaloader(
     quiet=True
 )
 
+# Session load कर
+try:
+    L.load_session_from_file("me_rohan_jadhav", "session-me_rohan_jadhav")
+    print("Session Loaded Successfully!")
+except Exception as e:
+    print(f"Session load failed: {e}")
+    
 # --- Optional Login (Stories sathi required) ---
 def login_instagram(username=None, password=None):
     if not username or not password:
