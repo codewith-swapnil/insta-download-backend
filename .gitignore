@@ -13,7 +13,6 @@ __pycache__/
 
 # Instaloader / Instagram cache
 *.json
-*.txt
 *.xz
 *.mp4
 *.jpg
