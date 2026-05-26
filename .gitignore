@@ -1,0 +1,60 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Instaloader / Instagram cache
+*.json
+*.txt
+*.xz
+*.mp4
+*.jpg
+*.png
+*.gif
+!requirements.txt  # keep this if you have it
+instaloader/  # any downloaded media from instaloader
+*.log
+
+# Flask / Server
+instance/
+.webassets-cache
+.env
+*.pid
+*.seed
+*.pid.lock
+
+# Logs
+logs/
+*.log
+error.log
+access.log
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables
+.env
+.flaskenv
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
