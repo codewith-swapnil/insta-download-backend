@@ -4,10 +4,13 @@ import instaloader
 import re
 import time
 import logging
+import os
+import base64
+from dotenv import load_dotenv 
 from functools import wraps
 from collections import defaultdict
 
-# --- Setup ---
+load_dotenv() 
 app = Flask(__name__)
 CORS(app)
 
@@ -29,31 +32,42 @@ L = instaloader.Instaloader(
     quiet=True
 )
 
-logger.info("Instaloader instance created (no downloads configured)")
-
-# Session load kara
-# try:
-#     L.load_session_from_file("me_rohan_jadhav", "session-me_rohan_jadhav")
-#     logger.info("Session loaded successfully!")
-# except Exception as e:
-#     logger.warning(f"Session load failed: {e}")
+logger.info("Instaloader instance created")
 
 
-# --- Optional Login ---
-def login_instagram(username=None, password=None):
-    if not username or not password:
-        logger.warning("Login credentials not provided — stories won't work")
+# --- Session Load from ENV (Render sathi) ---
+def load_session_from_env():
+    username = os.environ.get("INSTAGRAM_USERNAME", "").strip()
+    session_b64 = os.environ.get("INSTAGRAM_SESSION_B64", "").strip()
+
+    if not username or not session_b64:
+        logger.warning("INSTAGRAM_USERNAME or INSTAGRAM_SESSION_B64 env var missing — unauthenticated mode")
         return False
+
     try:
-        logger.info(f"Attempting Instagram login for user: {username}")
-        L.login(username, password)
-        logger.info("Instagram login successful!")
+        session_data = base64.b64decode(session_b64)
+
+        # Linux (Render) var path
+        session_dir = os.path.expanduser("~/.config/instaloader")
+        os.makedirs(session_dir, exist_ok=True)
+        session_path = os.path.join(session_dir, f"session-{username}")
+
+        with open(session_path, "wb") as f:
+            f.write(session_data)
+
+        L.load_session_from_file(username, session_path)
+        logger.info(f"Session loaded successfully for @{username}")
         return True
+
     except Exception as e:
-        logger.error(f"Instagram login failed: {e}")
+        logger.error(f"Session load failed: {e}")
         return False
 
-# login_instagram("YOUR_USERNAME", "YOUR_PASSWORD")
+
+# App start hoताना session load kar
+session_loaded = load_session_from_env()
+if not session_loaded:
+    logger.warning("Running WITHOUT session — may fail on datacenter IPs (Render)")
 
 
 # --- Simple In-Memory Rate Limiter ---
@@ -67,9 +81,8 @@ def rate_limit(max_requests=10, window_seconds=60):
             now = time.time()
             request_counts[ip] = [t for t in request_counts[ip] if now - t < window_seconds]
             current_count = len(request_counts[ip])
-            logger.debug(f"[RateLimit] IP={ip} | requests in window={current_count}/{max_requests}")
             if current_count >= max_requests:
-                logger.warning(f"[RateLimit] BLOCKED IP={ip} — {current_count} requests in {window_seconds}s")
+                logger.warning(f"[RateLimit] BLOCKED IP={ip}")
                 return jsonify({
                     "error": f"Jast requests! {window_seconds} seconds nantar try kara.",
                     "retry_after": window_seconds
@@ -93,36 +106,28 @@ def extract_story_info(url):
     pattern = r"/stories/([A-Za-z0-9_\.]+)/?([0-9]+)?"
     match = re.search(pattern, url)
     if match:
-        result = {"username": match.group(1), "story_id": match.group(2)}
-        logger.debug(f"[Parser] extract_story_info → {result}")
-        return result
-    logger.debug(f"[Parser] extract_story_info → no match for {url!r}")
+        return {"username": match.group(1), "story_id": match.group(2)}
     return None
 
 def extract_username_from_profile_url(url):
     url = url.split('?')[0].rstrip('/')
     pattern = r"instagram\.com/([A-Za-z0-9_\.]+)/?$"
     match = re.search(pattern, url)
-    username = match.group(1) if match else None
-    logger.debug(f"[Parser] extract_username_from_profile_url({url!r}) → {username!r}")
-    return username
+    return match.group(1) if match else None
 
 def detect_url_type(url):
     if "/stories/" in url:
-        result = "story"
+        return "story"
     elif "/p/" in url or "/reel/" in url or "/tv/" in url:
-        result = "post"
+        return "post"
     elif re.search(r"instagram\.com/[A-Za-z0-9_\.]+/?$", url):
-        result = "profile"
-    else:
-        result = "unknown"
-    logger.debug(f"[Parser] detect_url_type({url!r}) → {result!r}")
-    return result
+        return "profile"
+    return "unknown"
 
 
 # --- Media Builders ---
 def build_post_response(post):
-    logger.info(f"[Builder] Building response for post shortcode={post.shortcode!r} typename={post.typename!r}")
+    logger.info(f"[Builder] shortcode={post.shortcode!r} typename={post.typename!r}")
 
     base_info = {
         "shortcode": post.shortcode,
@@ -133,11 +138,8 @@ def build_post_response(post):
         "owner": post.owner_username,
         "thumbnail": post.url
     }
-    logger.info(f"[Builder] Post owner={post.owner_username!r} likes={post.likes} is_video={post.is_video}")
 
-    # 1. Carousel
     if post.typename == "GraphSidecar":
-        logger.info("[Builder] Post type: CAROUSEL — fetching sidecar nodes...")
         media_list = []
         for i, node in enumerate(post.get_sidecar_nodes()):
             item_type = "video" if node.is_video else "image"
@@ -146,8 +148,6 @@ def build_post_response(post):
                 "url": node.video_url if node.is_video else node.display_url,
                 "thumbnail": node.display_url
             })
-            logger.info(f"[Builder] Carousel item {i+1}: type={item_type!r}")
-        logger.info(f"[Builder] Carousel done — total items={len(media_list)}")
         return {
             "success": True,
             "type": "carousel",
@@ -156,9 +156,7 @@ def build_post_response(post):
             "data": media_list
         }
 
-    # 2. Single Video / Reel
     elif post.is_video:
-        logger.info(f"[Builder] Post type: VIDEO — views={post.video_view_count}")
         return {
             "success": True,
             "type": "video",
@@ -171,9 +169,7 @@ def build_post_response(post):
             }]
         }
 
-    # 3. Single Photo
     else:
-        logger.info("[Builder] Post type: IMAGE")
         return {
             "success": True,
             "type": "image",
@@ -194,51 +190,39 @@ def download_media():
 
     data = request.get_json()
     if not data:
-        logger.warning(f"[Request] IP={ip} — request body is empty or not JSON")
         return jsonify({"error": "JSON body required"}), 400
 
     url = data.get('url', '').strip()
     if not url:
-        logger.warning(f"[Request] IP={ip} — 'url' field missing or empty")
         return jsonify({"error": "URL dya!"}), 400
 
-    logger.info(f"[Request] IP={ip} URL={url!r}")
-
     if "instagram.com" not in url:
-        logger.warning(f"[Request] IP={ip} — rejected non-Instagram URL: {url!r}")
         return jsonify({"error": "Fakt Instagram links support hotat!"}), 400
 
     url_type = detect_url_type(url)
-    logger.info(f"[Request] URL type resolved: {url_type!r}")
-
+    logger.info(f"[Request] URL={url!r} type={url_type!r}")
     t_start = time.time()
 
     try:
         # ---- STORY ----
         if url_type == "story":
-            logger.info("[Story] Processing story URL...")
             story_info = extract_story_info(url)
             if not story_info:
-                logger.warning("[Story] Failed to extract story info from URL")
                 return jsonify({"error": "Story URL correct nahiye!"}), 400
 
-            logger.info(f"[Story] Username={story_info['username']!r} StoryID={story_info['story_id']!r}")
-            logger.info(f"[Story] Fetching profile for @{story_info['username']}...")
+            if not L.context.is_logged_in:
+                return jsonify({"error": "Stories sathi login required ahe. Server madhe session configure kara."}), 403
 
             try:
                 profile = instaloader.Profile.from_username(L.context, story_info["username"])
-                logger.info(f"[Story] Profile found: userid={profile.userid} is_private={profile.is_private}")
             except Exception as e:
-                logger.error(f"[Story] Profile lookup failed for {story_info['username']!r}: {e}")
+                logger.error(f"[Story] Profile lookup failed: {e}")
                 return jsonify({"error": f"'{story_info['username']}' he account sapadla nahi!"}), 404
 
-            logger.info(f"[Story] Fetching stories for userid={profile.userid}...")
             story_links = []
             for story in L.get_stories(userids=[profile.userid]):
-                logger.info(f"[Story] Processing story batch for user={story.owner_id}")
                 for item in story.get_items():
                     if story_info["story_id"] and str(item.mediaid) != story_info["story_id"]:
-                        logger.debug(f"[Story] Skipping item mediaid={item.mediaid} (target={story_info['story_id']})")
                         continue
                     item_type = "video" if item.is_video else "image"
                     story_links.append({
@@ -246,16 +230,12 @@ def download_media():
                         "url": item.video_url if item.is_video else item.url,
                         "timestamp": item.date_utc.isoformat()
                     })
-                    logger.info(f"[Story] Found item: type={item_type!r} mediaid={item.mediaid} ts={item.date_utc.isoformat()}")
 
             if not story_links:
-                logger.warning(f"[Story] No story items found for @{story_info['username']} (expired or private?)")
-                return jsonify({
-                    "error": "Story sapadli nahi! Story expire zali asel kiva account private ahe. Login check kara."
-                }), 404
+                return jsonify({"error": "Story sapadli nahi! Expire zali asel kiva private ahe."}), 404
 
             elapsed = round(time.time() - t_start, 2)
-            logger.info(f"[Story] Done — {len(story_links)} items returned in {elapsed}s")
+            logger.info(f"[Story] Done — {len(story_links)} items in {elapsed}s")
             return jsonify({
                 "success": True,
                 "type": "story",
@@ -265,49 +245,39 @@ def download_media():
 
         # ---- POST / REEL / CAROUSEL ----
         elif url_type == "post":
-            logger.info("[Post] Processing post/reel URL...")
             shortcode = extract_shortcode(url)
             if not shortcode:
-                logger.warning(f"[Post] Could not extract shortcode from: {url!r}")
                 return jsonify({"error": "Valid Instagram post/reel URL nahi!"}), 400
 
-            logger.info(f"[Post] Shortcode={shortcode!r} — fetching from Instagram...")
+            logger.info(f"[Post] Fetching shortcode={shortcode!r}...")
             try:
                 post = instaloader.Post.from_shortcode(L.context, shortcode)
-                logger.info(f"[Post] Post fetched: owner={post.owner_username!r} type={post.typename!r} is_video={post.is_video}")
             except instaloader.exceptions.InstaloaderException as e:
-                if "Login" in str(e) or "login" in str(e):
-                    logger.warning(f"[Post] Login required for shortcode={shortcode!r}: {e}")
-                    return jsonify({"error": "He post private ahe! Login karnya sathi server configure kara."}), 403
-                logger.error(f"[Post] Instaloader error fetching shortcode={shortcode!r}: {e}")
-                return jsonify({"error": "Post sapadla nahi! Delete zala asel kiva private ahe."}), 404
+                err = str(e)
+                if "401" in err or "login" in err.lower():
+                    return jsonify({"error": "Instagram ne block kela — session expire zala asel. Session regenerate kara."}), 403
+                if "404" in err:
+                    return jsonify({"error": "Post sapadla nahi — delete zala asel kiva private ahe."}), 404
+                logger.error(f"[Post] InstaloaderException: {e}")
+                return jsonify({"error": f"Instagram error: {err}"}), 500
 
             response = build_post_response(post)
             elapsed = round(time.time() - t_start, 2)
             logger.info(f"[Post] Done — type={response['type']!r} in {elapsed}s")
             return jsonify(response)
 
-        # ---- PROFILE PIC ----
+        # ---- PROFILE ----
         elif url_type == "profile":
-            logger.info("[Profile] Processing profile URL...")
             username = extract_username_from_profile_url(url)
             if not username:
-                logger.warning(f"[Profile] Could not extract username from: {url!r}")
                 return jsonify({"error": "Valid profile URL nahi!"}), 400
 
-            logger.info(f"[Profile] Username={username!r} — fetching profile data...")
             try:
                 profile = instaloader.Profile.from_username(L.context, username)
-                logger.info(
-                    f"[Profile] Fetched: full_name={profile.full_name!r} "
-                    f"followers={profile.followers} posts={profile.mediacount} "
-                    f"is_private={profile.is_private} is_verified={profile.is_verified}"
-                )
             except Exception as e:
                 logger.error(f"[Profile] Lookup failed for {username!r}: {e}")
                 return jsonify({"error": f"'{username}' he account sapadla nahi!"}), 404
 
-            logger.info(f"[Profile] Profile pic URL retrieved for @{username}")
             elapsed = round(time.time() - t_start, 2)
             logger.info(f"[Profile] Done in {elapsed}s")
             return jsonify({
@@ -327,19 +297,16 @@ def download_media():
             })
 
         else:
-            logger.warning(f"[Request] Unsupported URL type={url_type!r} for URL={url!r}")
             return jsonify({"error": "He URL support hot nahi! Post/Reel/Story/Profile URL dya."}), 400
 
     except instaloader.exceptions.InstaloaderException as e:
         error_msg = str(e)
         elapsed = round(time.time() - t_start, 2)
         if "rate" in error_msg.lower() or "429" in error_msg:
-            logger.warning(f"[Instagram] Rate limited by Instagram after {elapsed}s: {error_msg}")
             return jsonify({"error": "Instagram ne temporarily block kela. 5-10 minutes nantar try kara!"}), 429
-        elif "Private" in error_msg or "private" in error_msg:
-            logger.warning(f"[Instagram] Private account error after {elapsed}s: {error_msg}")
+        elif "private" in error_msg.lower():
             return jsonify({"error": "He account private ahe!"}), 403
-        logger.error(f"[Instagram] Instaloader error after {elapsed}s: {error_msg}")
+        logger.error(f"[Instagram] Error after {elapsed}s: {error_msg}")
         return jsonify({"error": f"Instagram error: {error_msg}"}), 500
 
     except Exception as e:
@@ -351,8 +318,12 @@ def download_media():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     logged_in = L.context.is_logged_in
-    logger.info(f"[Health] GET /api/health — logged_in={logged_in}")
-    return jsonify({"status": "ok", "logged_in": logged_in})
+    logger.info(f"[Health] logged_in={logged_in}")
+    return jsonify({
+        "status": "ok",
+        "logged_in": logged_in,
+        "session_user": os.environ.get("INSTAGRAM_USERNAME", "not set")
+    })
 
 
 if __name__ == '__main__':
