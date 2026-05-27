@@ -255,9 +255,9 @@ def download_media():
             except instaloader.exceptions.InstaloaderException as e:
                 err = str(e)
                 if "401" in err or "login" in err.lower():
-                    return jsonify({"error": "Instagram ne block kela — session expire zala asel. Session regenerate kara."}), 403
+                    return jsonify({"error": "Instagram ne block kela — session expire zala asel. Session regenerate kara." , "debug": err}), 403
                 if "404" in err:
-                    return jsonify({"error": "Post sapadla nahi — delete zala asel kiva private ahe."}), 404
+                    return jsonify({"error": "Post sapadla nahi — delete zala asel kiva private ahe.", "debug": err}), 404
                 logger.error(f"[Post] InstaloaderException: {e}")
                 return jsonify({"error": f"Instagram error: {err}"}), 500
 
